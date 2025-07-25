@@ -15,14 +15,14 @@ pg.mixer.init()
 
 screen = pg.display.set_mode((W, H))
 pg.display.set_caption("Anti-Air Control Simulator Remastered")
-pg.display.set_icon(pg.image.load("thumbnail.png"))
+pg.display.set_icon(pg.image.load("assets/thumbnail.png"))
 clock = pg.time.Clock()
 
-sound_explosion: pg.mixer.Sound = pg.mixer.Sound("explosion.wav")
-sound_selection: pg.mixer.Sound = pg.mixer.Sound("selection.wav")
-sound_detection: pg.mixer.Sound = pg.mixer.Sound("detection.wav")
-sound_rule_changed: pg.mixer.Sound = pg.mixer.Sound("rule_changed.wav")
-sound_score_change: pg.mixer.Sound = pg.mixer.Sound("score_change.wav")
+sound_explosion: pg.mixer.Sound = pg.mixer.Sound("assets/explosion.wav")
+sound_selection: pg.mixer.Sound = pg.mixer.Sound("assets/selection.wav")
+sound_detection: pg.mixer.Sound = pg.mixer.Sound("assets/detection.wav")
+sound_rule_changed: pg.mixer.Sound = pg.mixer.Sound("assets/rule_changed.wav")
+sound_score_change: pg.mixer.Sound = pg.mixer.Sound("assets/score_change.wav")
 
 sound_mainchannel: pg.mixer.Channel = pg.mixer.Channel(0)
 sound_mainchannel.set_volume(0.01)
@@ -459,4 +459,3 @@ while play:
     pg.display.flip()
 
 pg.quit()
-quit()
