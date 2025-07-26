@@ -110,7 +110,9 @@ class GameHandler:
 
 class Plane(GameObject):
     def __init__(self):
-        super().__init__(Vector2((W-100)*random(), randint(0,1)*H), 3)
+        self.start_side: int = randint(0,1)*H
+        self.return_point: Vector2 = Vector2(randint(0, W*0.85), self.start_side)
+        super().__init__(Vector2((W-100)*random(), self.start_side), 3)
         self.direction = (Vector2((W-100)*random(), H if self.position.y == 0 else 0) - self.position).normalize()
         self.speed = random()/6
         self.selected = False
@@ -121,31 +123,36 @@ class Plane(GameObject):
         self.number = f"{randint(1,99999):05d}"
         self.spotted: bool = False
         self.allow_takedown: bool = False
-        self.allow_control: bool = False
+
+        self.get_back: bool = False
+        self.allow_back: bool = True if random() <= 0.65 else False
 
     def update(self):
         self.position += self.direction*self.speed
         if (self.position.y < 0 or self.position.y > H or self.position.x < 0 or self.position.x > W*0.85):
-            if (not self.allow_takedown): score.add(10)
+            if (self.get_back):
+                score.add(30)
+            else:
+                score.add(10) if not self.allow_takedown else score.sub(25)
             gamehandler.remove(self)
         if (not self.spotted):
             spotted = is_point_in_triangle(
             self.position, 
             window_center, 
-            window_center+Vector2(math.cos(pg.time.get_ticks()/radar_speed_tick), math.sin(pg.time.get_ticks()/radar_speed_tick))*245,
-            window_center+Vector2(math.cos((pg.time.get_ticks()-200)/radar_speed_tick), math.sin((pg.time.get_ticks()-200)/radar_speed_tick))*245)
+            window_center+Vector2(math.cos(radar.radar_tick/Radar.radar_speed_tick), math.sin(radar.radar_tick/Radar.radar_speed_tick))*245,
+            window_center+Vector2(math.cos((radar.radar_tick-200)/Radar.radar_speed_tick), math.sin((radar.radar_tick-200)/Radar.radar_speed_tick))*245)
             if (spotted): 
                 sound_mainchannel.play(sound_detection)
                 gamehandler.add(Detection(self.position))
             self.spotted = spotted
-        planes = list(filter(lambda x: type(x) is Plane, gamehandler.get().copy()))
-        if self in planes: planes.remove(self)
-        for i in planes:
-            if (i.position-self.position).length() <= 5:
-                gamehandler.add(Explosion(self.position))
+        if (not self.allow_takedown and (self.position-window_center).length()<=H/4): flyRuler.check_plane(self)
+        if (self.get_back): 
+            pg.draw.line(screen, (0, 255, 0), self.position, self.return_point)
+            target = (self.return_point-self.position).normalize()
+            self.direction = Vector2(pg.math.lerp(self.direction.x, target.x, 0.001), pg.math.lerp(self.direction.y, target.y, 0.001)) 
 
     def draw(self):
-        if ((window_center-self.position).length() > 250 or ((window_center-self.position).length() <= 250 and not self.spotted)): return
+        if ((window_center-self.position).length() > 245 or ((window_center-self.position).length() <= 245 and not self.spotted)): return
         if self.selected:
             out1, out2 = get_intersection_points(window_center, (W-100)/2, self.position, self.direction)
             in1, in2 = get_intersection_points(window_center, (W-100)/4, self.position, self.direction)
@@ -158,13 +165,16 @@ class Plane(GameObject):
         else:
             pg.draw.line(screen, (0, 200, 0), self.position, self.position+self.direction*20)
         pg.draw.circle(screen, self.selected_color if self.selected else self.default_color, self.position, 2.5)
-        if (self.allow_takedown): pg.draw.circle(screen, (255, 0, 0), self.position, 6+abs(math.sin(pg.time.get_ticks()/250)*4), 1)
+        if (self.allow_takedown): pg.draw.circle(screen, (255, 0, 0), self.position, 10, 2)
     
     def takedown(self):
         if (self.position-window_center).length() <= 250 and self.spotted:
             if self.allow_takedown: score.add(10 if self.purpose == "CIVIL" else 25)
             else: score.sub(25 if self.purpose == "CIVIL" else 60)
         gamehandler.remove(self)
+
+    def on_message(self):
+        if (self.purpose == "CIVIL" and self.allow_back and self.allow_takedown and not self.get_back): self.get_back = True
 
 class Rocket(GameObject):
     def __init__(self, target: Plane):
@@ -267,19 +277,14 @@ class Rule:
         self.purpose: str = purpose
         self.zone: str = zone
 
+    
     def check(self, plane: Plane):
         dist = (window_center-plane.position).length()
-        if (self.country == plane.country and (H/2 if self.zone == "ALL" else H/4) >= dist and (self.purpose == plane.purpose or self.purpose == "ALL")):
+        if (self.country == plane.country and (True if self.zone == "ALL" else (H/4 >= dist)) and (self.purpose == plane.purpose or self.purpose == "ALL")):
             plane.allow_takedown = True
-        else:
-            plane.allow_takedown = False
-        if (self.country == plane.country and (self.purpose == plane.purpose or self.purpose == "ALL")):
-            plane.allow_control = False
-        else:
-            plane.allow_control = True
 
 class FlyRuler:
-    countryes: list[str] = "AT BE HU DE DK ES IT LV LT LU NL PL PT SI FI FR HR CZ SE EE RF UK BY TY AZ".split()
+    countryes: list[str] = "DE IT PT SI FR CZ RF UK BY TY AZ KZ".split()
     purposes: list[str] = "CIVIL ARMY".split()
 
     def __init__(self):
@@ -296,16 +301,27 @@ class FlyRuler:
             for i in self.rules:
                 if ( (i.country == rule.country and i.purpose == rule.purpose and (i.zone == rule.zone or (rule.zone == "ALL" and i.zone == "CNR") ) ) ): return self.rule_add_random
         self.rules.append(rule)
+        self.draw()
+        self.check_planes()
 
     def rule_remove_random(self):
         if (self.rules.__len__() == 0): return
         self.rules.remove(choice(self.rules))
+        self.draw()
+        self.check_planes()
+
+    def check_planes(self):
+        planes = list(filter(lambda x: type(x) is Plane, gamehandler.get()))
+        for rule in self.rules:
+            map(rule.check, planes)
 
     def check_plane(self, plane: Plane):
         for rule in self.rules:
             rule.check(plane)
 
+    
     def draw(self):
+        pg.draw.rect(screen, (0,0,0), (self.draw_point.x, self.draw_point.y, W, H))
         renderText(" NO-FLY LIST", (255, 255, 255), self.draw_point)
         i = 0
         for rule in self.rules:
@@ -326,19 +342,72 @@ class Score:
 
     def get(self) -> int:
         return self.score
+
+class Radar:
+    radar_speed_tick: int = 1200
+
+    def __init__(self):
+        self.draw_priorety = 5
+        self.selected_plane: Plane = None
+        self.radar_tick: int = 0
+
+    def update(self):
+        self.radar_tick += 1000/FPS
+
+    def select_plane(self, position: Vector2):
+        if (not radar.selected_plane is None): 
+            radar.selected_plane.selected = False
+            radar.selected_plane = None
+        plane = gamehandler.findClosest(Plane, position)
+        if (not (plane is None) and (plane.position - position).length() <= 10):
+            radar.selected_plane = plane
+            plane.selected = True
+            sound_mainchannel.play(sound_selection)
+
+    def launch_rocket(self):
+        gamehandler.add(Rocket(self.selected_plane))
+        self.selected_plane.selected = False
+        self.selected_plane = None
+
+    def destroy_rocket(self, position: Vector2):
+        rocket = gamehandler.findClosest(Rocket, event.pos)
+        if (not (rocket is None) and (rocket.position - event.pos).length() <= 10):
+            rocket.explode()
+
+    def send_message(self):
+        self.selected_plane.on_message()
+
+    def draw(self):
+        pg.draw.circle(screen, (0, 150, 0), window_center, 3)
+        if (not self.selected_plane is None):
+            renderText(f"{self.selected_plane.country}-{self.selected_plane.number}", (255, 255, 255), Vector2(W*0.85, 40))
+            renderText(f"P:[{int(self.selected_plane.position.x):3d}, {int(self.selected_plane.position.y):03d}]", (255, 255, 255), Vector2(W*0.85, 56))
+            renderText(f"V:[{int(self.selected_plane.direction.x*self.selected_plane.speed*100):04d}, {int(self.selected_plane.direction.y*self.selected_plane.speed*100):04d}]", (255, 255, 255), Vector2(W*0.85, 72))
+            renderText(f"C:{self.selected_plane.purpose}", (255, 255, 255), Vector2(W*0.85, 88))
+            norm: Vector2 = (self.selected_plane.position-window_center).normalize()
+            dist: Vector2 = (self.selected_plane.position-window_center).length()+math.sin(pg.time.get_ticks()/100)*10
+            pg.draw.lines(screen, (0, 150, 0), True, [window_center, norm*250+window_center+norm.rotate(90)*5, norm*250+window_center-norm.rotate(90)*5])
+            pg.draw.line(screen, (0, 150, 0), window_center+norm*dist+norm.rotate(90)*dist*0.02, window_center+norm*dist-norm.rotate(90)*dist*0.02)
+        elif not (mouse_position-window_center).length() == 0:
+            norm: Vector2 = (mouse_position-window_center).normalize()
+            dist: Vector2 = abs(math.sin(pg.time.get_ticks()/200))*250
+            pg.draw.lines(screen, (0, 150, 0), True, [window_center, norm*250+window_center+norm.rotate(90)*5, norm*250+window_center-norm.rotate(90)*5])
+            pg.draw.line(screen, (0, 150, 0), window_center+norm*dist+norm.rotate(90)*dist*0.02, window_center+norm*dist-norm.rotate(90)*dist*0.02)
+        pg.draw.circle(screen, (0, 150, 0), window_center, H/2, 5)
+        pg.draw.circle(screen, (0, 150, 0), window_center, H/4, 2)
+        pg.draw.line(screen, (0, 150, 0), window_center, window_center+Vector2(math.cos(self.radar_tick/Radar.radar_speed_tick), math.sin(self.radar_tick/Radar.radar_speed_tick))*245)
+        pg.draw.line(screen, (0, 50, 0), window_center, window_center+Vector2(math.cos((self.radar_tick-200)/Radar.radar_speed_tick), math.sin((self.radar_tick-200)/Radar.radar_speed_tick))*245)
     
 
 
 # Game Configuration
 window_center: Vector2 = Vector2(W/2-50, H/2)
-selected_plane: Plane = None
+radar: Radar = Radar()
 
 gamehandler: GameHandler = GameHandler()
 gamehandler.add(Plane())
 
 flyRuler: FlyRuler = FlyRuler()
-
-radar_speed_tick = 1200
 
 last_plane = 0
 last_rule_change = 2500
@@ -367,28 +436,28 @@ while play:
         clock.tick(FPS)
         pg.display.flip()
     
-    screen.fill((0, 0, 0))
+    pg.draw.rect(screen, (0,0,0), (0, 0, 500, 500))
+    pg.draw.rect(screen, (0,0,0), (500, 0, W, 110))
     # Update
     mouse_position = Vector2(pg.mouse.get_pos())
 
+    radar.update()
     # Plane Spawn
     if (last_plane <= pg.time.get_ticks()):
         last_plane = pg.time.get_ticks() + randint(5000, 15000)
-        gamehandler.add(Plane())
+        plane = Plane()
+        gamehandler.add(plane)
+        flyRuler.check_plane(plane)
 
     # Rule Assign
     if (last_rule_change <= pg.time.get_ticks()):
-        last_rule_change = pg.time.get_ticks() + randint(45000, 75000)
-        if (flyRuler.rules.__len__() < 15):
-            if (flyRuler.rules.__len__()>=3): flyRuler.rule_add_random() if random() >= 0.5 else flyRuler.rule_remove_random()
+        last_rule_change = pg.time.get_ticks() + randint(30000, 60000)
+        if (flyRuler.rules.__len__() < 10):
+            if (flyRuler.rules.__len__()>5): flyRuler.rule_add_random() if random() <= 0.70 else flyRuler.rule_remove_random()
             else: flyRuler.rule_add_random()
         else: 
             flyRuler.rule_remove_random()
         sound_mainchannel.play(sound_rule_changed)
-
-    # Rule Check
-    if (not selected_plane is None):
-        flyRuler.check_plane(selected_plane)
 
     gamehandler.update()
 
@@ -397,63 +466,36 @@ while play:
             play = False
         if event.type == pg.MOUSEBUTTONDOWN:
             if (event.button == 1):
-                # Select Plane
-                if (not selected_plane is None): 
-                        selected_plane.selected = False
-                        selected_plane = None
-                plane = gamehandler.findClosest(Plane, event.pos)
-                if (not (plane is None) and (plane.position - event.pos).length() <= 10):
-                    selected_plane = plane
-                    plane.selected = True
-                    sound_mainchannel.play(sound_selection)
+                radar.select_plane(event.pos)
             if (event.button == 3):
-                rocket = gamehandler.findClosest(Rocket, event.pos)
-                if (not (rocket is None) and (rocket.position - event.pos).length() <= 10):
-                    rocket.explode()
+                radar.destroy_rocket(event.pos)
         if event.type == pg.KEYDOWN:
-            if (not selected_plane is None):
-                if (selected_plane.allow_control):
-                    if (event.key == pg.K_LEFT):
-                        selected_plane.direction = selected_plane.direction.rotate(-1)
-                    if (event.key == pg.K_RIGHT):
-                        selected_plane.direction = selected_plane.direction.rotate(1)
+            if (not radar.selected_plane is None):
                 if (event.key == pg.K_SPACE):
-                    # Launch Rocket
-                    gamehandler.add(Rocket(selected_plane))
-                    selected_plane.selected = False
-                    selected_plane = None
+                    radar.launch_rocket()
+                if (event.key == pg.K_LALT or event.key == pg.K_RALT):
+                    radar.send_message()
             if (event.key == pg.K_ESCAPE):
                 paused = True
                 paused_time = pg.time.get_ticks()
+            if (event.key == pg.K_r):
+                flyRuler.rule_add_random()
+            elif (event.key == pg.K_d):
+                flyRuler.rule_remove_random()
+            if (event.key == pg.K_s):
+                plane = Plane()
+                gamehandler.add(plane)
+                flyRuler.check_plane(plane)
 
     # Draw
 
     pg.draw.line(screen, (0, 150, 0), (W-100, 0), (W-100, H), 4)
     renderText(f"S:{score.get():010d}", (255,255,255), Vector2(W*0.85, 8))
     pg.draw.line(screen, (0, 150, 0), (W-100, 32), (W, 32), 4)
-    if (not selected_plane is None):
-        renderText(f"{selected_plane.country}-{selected_plane.number}", (255, 255, 255), Vector2(W*0.85, 40))
-        renderText(f"P:[{int(selected_plane.position.x):3d}, {int(selected_plane.position.y):03d}]", (255, 255, 255), Vector2(W*0.85, 56))
-        renderText(f"V:[{int(selected_plane.direction.x*selected_plane.speed*100):04d}, {int(selected_plane.direction.y*selected_plane.speed*100):04d}]", (255, 255, 255), Vector2(W*0.85, 72))
-        renderText(f"C:{selected_plane.purpose}", (255, 255, 255), Vector2(W*0.85, 88))
-        norm: Vector2 = (selected_plane.position-window_center).normalize()
-        dist: Vector2 = (selected_plane.position-window_center).length()+math.sin(pg.time.get_ticks()/100)*10
-        pg.draw.lines(screen, (0, 150, 0), True, [window_center, norm*250+window_center+norm.rotate(90)*5, norm*250+window_center-norm.rotate(90)*5])
-        pg.draw.line(screen, (0, 150, 0), window_center+norm*dist+norm.rotate(90)*dist*0.02, window_center+norm*dist-norm.rotate(90)*dist*0.02)
-    elif not (mouse_position-window_center).length() == 0:
-        norm: Vector2 = (mouse_position-window_center).normalize()
-        dist: Vector2 = abs(math.sin(pg.time.get_ticks()/200))*250
-        pg.draw.lines(screen, (0, 150, 0), True, [window_center, norm*250+window_center+norm.rotate(90)*5, norm*250+window_center-norm.rotate(90)*5])
-        pg.draw.line(screen, (0, 150, 0), window_center+norm*dist+norm.rotate(90)*dist*0.02, window_center+norm*dist-norm.rotate(90)*dist*0.02)
     pg.draw.line(screen, (0, 150, 0), (W-100, 112), (W, 112), 4)
-    flyRuler.draw()
 
-    pg.draw.circle(screen, (0, 150, 0), window_center, 3)
+    radar.draw()
     gamehandler.draw()
-    pg.draw.circle(screen, (0, 150, 0), window_center, H/2, 5)
-    pg.draw.circle(screen, (0, 150, 0), window_center, H/4, 2)
-    pg.draw.line(screen, (0, 150, 0), window_center, window_center+Vector2(math.cos(pg.time.get_ticks()/radar_speed_tick), math.sin(pg.time.get_ticks()/radar_speed_tick))*245)
-    pg.draw.line(screen, (0, 50, 0), window_center, window_center+Vector2(math.cos((pg.time.get_ticks()-200)/radar_speed_tick), math.sin((pg.time.get_ticks()-200)/radar_speed_tick))*245)
     
     clock.tick(FPS)
     pg.display.flip()
